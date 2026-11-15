@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Academic Humanizer</title>
+<style>
+  :root {
+    --bg: #f6f4ef; --panel: #fffdf9; --ink: #1f2328; --muted: #6b7280;
+    --line: #dcd7cc; --accent: #2f5d50; --accent-ink: #fff; --warn: #a4551f; --good: #2f6f4f;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #16181b; --panel: #1e2125; --ink: #e7e5e0; --muted: #9aa0a8;
+            --line: #33373d; --accent: #7fbfa8; --accent-ink: #10231c; --warn: #e0a070; --good: #8fd0ae; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 1180px; margin: 0 auto; padding: 28px 16px 48px; }
+  h1 { font: 600 1.6rem/1.2 Georgia, "Times New Roman", serif; margin: 0 0 4px; }
+  p.sub { color: var(--muted); margin: 0 0 20px; max-width: 70ch; }
+  .controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 14px; }
+  select, button { font: inherit; border-radius: 8px; border: 1px solid var(--line);
+                   padding: 8px 12px; background: var(--panel); color: var(--ink); }
+  button { cursor: pointer; }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+  button:disabled { opacity: .55; cursor: wait; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 800px) { .grid { grid-template-columns: 1fr; } }
+  .pane { background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+          padding: 14px; display: flex; flex-direction: column; min-width: 0; }
+  .pane h2 { font-size: .8rem; letter-spacing: .06em; text-transform: uppercase; color: var(--muted);
+             margin: 0 0 8px; display: flex; justify-content: space-between; align-items: center; }
+  textarea { width: 100%; min-height: 340px; resize: vertical; border: 1px solid var(--line);
+             border-radius: 8px; padding: 12px; background: var(--bg); color: var(--ink);
+             font: 1rem/1.6 Georgia, "Times New Roman", serif; }
+  .score { margin-top: 12px; font-size: .92rem; }
+  .bar { height: 8px; border-radius: 4px; background: var(--line); overflow: hidden; margin: 6px 0 8px; }
+  .bar > i { display: block; height: 100%; background: var(--warn); width: 0; transition: width .3s; }
+  .bar.good > i { background: var(--good); }
+  .score ul { margin: 6px 0 0; padding-left: 18px; color: var(--muted); }
+  .score li { margin-bottom: 3px; overflow-wrap: anywhere; }
+  .err { color: var(--warn); margin: 0; }
+  footer { color: var(--muted); font-size: .85rem; margin-top: 22px; max-width: 80ch; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Academic Humanizer</h1>
+  <p class="sub">Rewrites formulaic prose into natural academic writing. Citations, quotations and
+    meaning are preserved; the register stays formal.</p>
+
+  <div class="controls">
+    <label>Mode
+      <select id="mode">
+        <option value="rules">Rules (offline, instant)</option>
+        <option value="both">Claude + rules (best quality, needs API key)</option>
+        <option value="llm">Claude only</option>
+      </select>
+    </label>
+    <button class="primary" id="go">Humanize</button>
+    <button id="again" title="Different word choices in rules mode">Try another variant</button>
+    <p class="err" id="err" role="alert"></p>
+  </div>
+
+  <div class="grid">
+    <section class="pane">
+      <h2>Draft</h2>
+      <textarea id="in" placeholder="Paste your text here..."></textarea>
+      <div class="score" id="before"></div>
+    </section>
+    <section class="pane">
+      <h2>Rewritten <button id="copy">Copy</button></h2>
+      <textarea id="out" placeholder="The rewrite appears here. Edit it freely."></textarea>
+      <div class="score" id="after"></div>
+    </section>
+  </div>
+
+  <footer>The score is this tool's own heuristic (stock phrases, uniform sentence rhythm, signpost
+    transitions, dash asides). It is not a commercial AI detector and cannot predict one. Read the
+    result before using it, and follow your institution's rules on AI assistance.</footer>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+let seed = 0, timer;
+
+function render(el, rep) {
+  if (!rep) { el.textContent = ""; return; }
+  const good = rep.score <= 20;
+  el.innerHTML = "";
+  const head = document.createElement("div");
+  head.textContent = `Formulaic score ${rep.score}/100 · ${rep.word_count} words · ` +
+    `sentence variation ${rep.burstiness.toFixed(2)}`;
+  const bar = document.createElement("div");
+  bar.className = "bar" + (good ? " good" : "");
+  const fill = document.createElement("i");
+  fill.style.width = Math.max(rep.score, 2) + "%";
+  bar.appendChild(fill);
+  const ul = document.createElement("ul");
+  for (const issue of rep.issues) {
+    const li = document.createElement("li"); li.textContent = issue; ul.appendChild(li);
+  }
+  el.append(head, bar, ul);
+}
+
+async function post(path, body) {
+  const res = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" },
+                                  body: JSON.stringify(body) });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "Request failed.");
+  return data;
+}
+
+async function run() {
+  $("err").textContent = "";
+  const btns = [$("go"), $("again")];
+  btns.forEach(b => b.disabled = true);
+  $("go").textContent = $("mode").value === "rules" ? "Working..." : "Asking Claude...";
+  try {
+    const d = await post("/api/humanize", { text: $("in").value, mode: $("mode").value, seed });
+    $("out").value = d.output;
+    render($("before"), d.before); render($("after"), d.after);
+  } catch (e) { $("err").textContent = e.message; }
+  btns.forEach(b => b.disabled = false);
+  $("go").textContent = "Humanize";
+}
+
+$("go").onclick = () => { seed = 0; run(); };
+$("again").onclick = () => { seed += 1; run(); };
+$("copy").onclick = async () => {
+  await navigator.clipboard.writeText($("out").value);
+  $("copy").textContent = "Copied"; setTimeout(() => $("copy").textContent = "Copy", 1200);
+};
+$("in").oninput = () => {
+  clearTimeout(timer);
+  timer = setTimeout(async () => {
+    if (!$("in").value.trim()) return render($("before"), null);
+    try { render($("before"), (await post("/api/analyze", { text: $("in").value })).before); } catch {}
+  }, 400);
+};
+$("out").oninput = () => {
+  clearTimeout(timer);
+  timer = setTimeout(async () => {
+    if (!$("out").value.trim()) return render($("after"), null);
+    try { render($("after"), (await post("/api/analyze", { text: $("out").value })).before); } catch {}
+  }, 400);
+};
+</script>
+</body>
+</html>

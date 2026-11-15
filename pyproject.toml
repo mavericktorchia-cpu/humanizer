@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "humanizer"
+version = "0.1.0"
+description = "Rewrite formulaic prose into natural academic writing"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+llm = ["anthropic>=1.0"]
+
+[project.scripts]
+humanize = "humanizer.cli:main"
+
+[tool.setuptools]
+packages = ["humanizer"]
+
+[tool.setuptools.package-data]
+humanizer = ["index.html"]
